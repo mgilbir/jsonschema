@@ -90,6 +90,10 @@ type CustomTypeField struct {
 	CreatedAt CustomTime
 }
 
+type NullableTypeField struct {
+	UpdatedAt *CustomTime
+}
+
 type RootOneOf struct {
 	Field1 string      `json:"field1" jsonschema:"oneof_required=group1"`
 	Field2 string      `json:"field2" jsonschema:"oneof_required=group2"`
@@ -124,13 +128,24 @@ func TestSchemaGeneration(t *testing.T) {
 			TypeMapper: func(i reflect.Type) *Type {
 				if i == reflect.TypeOf(CustomTime{}) {
 					return &Type{
-						Type:   "string",
+						Type:   StringOrArray("string"),
 						Format: "date-time",
 					}
 				}
 				return nil
 			},
 		}, "fixtures/custom_type.json"},
+		{&NullableTypeField{}, &Reflector{
+			TypeMapper: func(i reflect.Type) *Type {
+				if i == reflect.TypeOf(CustomTime{}) {
+					return &Type{
+						Type:   StringOrArray("string"),
+						Format: "date-time",
+					}
+				}
+				return nil
+			},
+		}, "fixtures/nullable_type.json"},
 	}
 
 	for _, tt := range tests {

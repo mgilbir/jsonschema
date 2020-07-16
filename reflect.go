@@ -57,7 +57,7 @@ type Type struct {
 	AdditionalProperties json.RawMessage        `json:"additionalProperties,omitempty"` // section 5.18
 	Dependencies         map[string]*Type       `json:"dependencies,omitempty"`         // section 5.19
 	Enum                 []interface{}          `json:"enum,omitempty"`                 // section 5.20
-	Type                 string                 `json:"type,omitempty"`                 // section 5.21
+	Type                 stringOrArray          `json:"type,omitempty"`                 // section 5.21
 	AllOf                []*Type                `json:"allOf,omitempty"`                // section 5.22
 	AnyOf                []*Type                `json:"anyOf,omitempty"`                // section 5.23
 	OneOf                []*Type                `json:"oneOf,omitempty"`                // section 5.24
@@ -138,7 +138,7 @@ func (r *Reflector) ReflectFromType(t reflect.Type) *Schema {
 	if r.ExpandedStruct {
 		st := &Type{
 			Version:              Version,
-			Type:                 "object",
+			Type:                 StringOrArray("object"),
 			Properties:           orderedmap.New(),
 			AdditionalProperties: []byte("false"),
 		}
@@ -149,6 +149,10 @@ func (r *Reflector) ReflectFromType(t reflect.Type) *Schema {
 		r.reflectStruct(definitions, t)
 		delete(definitions, r.typeName(t))
 		return &Schema{Type: st, Definitions: definitions}
+	}
+
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
 	}
 
 	s := &Schema{
@@ -191,8 +195,8 @@ func (r *Reflector) reflectTypeToSchema(definitions Definitions, t reflect.Type)
 	// It will unmarshal either.
 	if t.Implements(protoEnumType) {
 		return &Type{OneOf: []*Type{
-			{Type: "string"},
-			{Type: "integer"},
+			{Type: StringOrArray("string")},
+			{Type: StringOrArray("integer")},
 		}}
 	}
 
@@ -208,7 +212,7 @@ func (r *Reflector) reflectTypeToSchema(definitions Definitions, t reflect.Type)
 	switch t {
 	case ipType:
 		// TODO differentiate ipv4 and ipv6 RFC section 7.3.4, 7.3.5
-		return &Type{Type: "string", Format: "ipv4"} // ipv4 RFC section 7.3.4
+		return &Type{Type: StringOrArray("string"), Format: "ipv4"} // ipv4 RFC section 7.3.4
 	}
 
 	switch t.Kind() {
@@ -216,16 +220,16 @@ func (r *Reflector) reflectTypeToSchema(definitions Definitions, t reflect.Type)
 
 		switch t {
 		case timeType: // date-time RFC section 7.3.1
-			return &Type{Type: "string", Format: "date-time"}
+			return &Type{Type: StringOrArray("string"), Format: "date-time"}
 		case uriType: // uri RFC section 7.3.6
-			return &Type{Type: "string", Format: "uri"}
+			return &Type{Type: StringOrArray("string"), Format: "uri"}
 		default:
 			return r.reflectStruct(definitions, t)
 		}
 
 	case reflect.Map:
 		rt := &Type{
-			Type: "object",
+			Type: StringOrArray("object"),
 			PatternProperties: map[string]*Type{
 				".*": r.reflectTypeToSchema(definitions, t.Elem()),
 			},
@@ -241,11 +245,11 @@ func (r *Reflector) reflectTypeToSchema(definitions Definitions, t reflect.Type)
 		}
 		switch t {
 		case byteSliceType:
-			returnType.Type = "string"
+			returnType.Type = StringOrArray("string")
 			returnType.Media = &Type{BinaryEncoding: "base64"}
 			return returnType
 		default:
-			returnType.Type = "array"
+			returnType.Type = StringOrArray("array")
 			returnType.Items = r.reflectTypeToSchema(definitions, t.Elem())
 			return returnType
 		}
@@ -257,19 +261,23 @@ func (r *Reflector) reflectTypeToSchema(definitions Definitions, t reflect.Type)
 
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
 		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return &Type{Type: "integer"}
+		return &Type{Type: StringOrArray("integer")}
 
 	case reflect.Float32, reflect.Float64:
-		return &Type{Type: "number"}
+		return &Type{Type: StringOrArray("number")}
 
 	case reflect.Bool:
-		return &Type{Type: "boolean"}
+		return &Type{Type: StringOrArray("boolean")}
 
 	case reflect.String:
-		return &Type{Type: "string"}
+		return &Type{Type: StringOrArray("string")}
 
 	case reflect.Ptr:
-		return r.reflectTypeToSchema(definitions, t.Elem())
+		v := r.reflectTypeToSchema(definitions, t.Elem())
+		if len(v.Type) > 0 {
+			v.Type = v.Type.With("null")
+		}
+		return v
 	}
 	panic("unsupported type " + t.String())
 }
@@ -279,7 +287,7 @@ func (r *Reflector) reflectStruct(definitions Definitions, t reflect.Type) *Type
 	for _, ignored := range r.IgnoredTypes {
 		if reflect.TypeOf(ignored) == t {
 			st := &Type{
-				Type:                 "object",
+				Type:                 StringOrArray("object"),
 				Properties:           orderedmap.New(),
 				AdditionalProperties: []byte("true"),
 			}
@@ -297,7 +305,7 @@ func (r *Reflector) reflectStruct(definitions Definitions, t reflect.Type) *Type
 		}
 	}
 	st := &Type{
-		Type:                 "object",
+		Type:                 StringOrArray("object"),
 		Properties:           orderedmap.New(),
 		AdditionalProperties: []byte("false"),
 	}
@@ -350,14 +358,14 @@ func (t *Type) structKeywordsFromTags(f reflect.StructField, parentType *Type, p
 	t.Description = f.Tag.Get("jsonschema_description")
 	tags := strings.Split(f.Tag.Get("jsonschema"), ",")
 	t.genericKeywords(tags, parentType, propertyName)
-	switch t.Type {
-	case "string":
+
+	if t.Type.Has("string") {
 		t.stringKeywords(tags)
-	case "number":
+	} else if t.Type.Has("number") {
 		t.numbericKeywords(tags)
-	case "integer":
+	} else if t.Type.Has("integer") {
 		t.numbericKeywords(tags)
-	case "array":
+	} else if t.Type.Has("array") {
 		t.arrayKeywords(tags)
 	}
 	extras := strings.Split(f.Tag.Get("jsonschema_extras"), ",")
@@ -376,7 +384,7 @@ func (t *Type) genericKeywords(tags []string, parentType *Type, propertyName str
 			case "description":
 				t.Description = val
 			case "type":
-				t.Type = val
+				t.Type = StringOrArray(val)
 			case "oneof_required":
 				var typeFound *Type
 				for i := range parentType.OneOf {
@@ -396,21 +404,20 @@ func (t *Type) genericKeywords(tags []string, parentType *Type, propertyName str
 				if t.OneOf == nil {
 					t.OneOf = make([]*Type, 0, 1)
 				}
-				t.Type = ""
+				t.Type = stringOrArray(nil)
 				types := strings.Split(nameValue[1], ";")
 				for _, ty := range types {
 					t.OneOf = append(t.OneOf, &Type{
-						Type: ty,
+						Type: StringOrArray(ty),
 					})
 				}
 			case "enum":
-				switch t.Type {
-				case "string":
+				if t.Type.Has("string") {
 					t.Enum = append(t.Enum, val)
-				case "integer":
+				} else if t.Type.Has("integer") {
 					i, _ := strconv.Atoi(val)
 					t.Enum = append(t.Enum, i)
-				case "number":
+				} else if t.Type.Has("number") {
 					f, _ := strconv.ParseFloat(val, 64)
 					t.Enum = append(t.Enum, f)
 				}
@@ -619,6 +626,10 @@ func (r *Reflector) reflectFieldName(f reflect.StructField) (string, bool, bool)
 	// field anonymous but without json tag should be inherited by current type
 	if f.Anonymous && !exist {
 		name = ""
+	}
+
+	if f.Type.Kind() == reflect.Ptr {
+		return name, exist, false
 	}
 
 	return name, exist, required
